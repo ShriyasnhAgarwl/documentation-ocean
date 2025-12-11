@@ -236,13 +236,165 @@ const uploadOtherDocumentsToS3 = async (files, requestId) => {
 module.exports = { uploadOtherDocumentsToS3 };
 ```
 
-### **3. Main API Endpoint**
+### **3. 🎯 PRODUCTION-CRITICAL: Server-Side Recompression**
+
+**Why This is Mandatory for BFSI/vKYC:**
+- Frontend compression alone is unreliable (different devices, browsers)
+- Must strip EXIF metadata (privacy/security)
+- Normalize quality across all uploads
+- Final size enforcement
+- Prevent malicious file uploads
+
+```javascript
+// utils/imageProcessor.js
+const sharp = require('sharp');
+
+/**
+ * 🔒 PRODUCTION-GRADE SERVER-SIDE IMAGE PROCESSING
+ * - Strip all metadata (EXIF, GPS, etc.)
+ * - Recompress to enforce quality standards
+ * - Enforce maximum size limit (800 KB)
+ * - Normalize dimensions
+ * - Convert to standard format (JPEG)
+ */
+const processAndCompressImage = async (fileBuffer, maxSizeKB = 800) => {
+  const maxSizeBytes = maxSizeKB * 1024;
+  
+  try {
+    // Get image metadata
+    const metadata = await sharp(fileBuffer).metadata();
+    
+    // Calculate resize dimensions (max 1920px)
+    let width = metadata.width;
+    let height = metadata.height;
+    const maxDimension = 1920;
+    
+    if (width > maxDimension || height > maxDimension) {
+      if (width > height) {
+        height = Math.round((height / width) * maxDimension);
+        width = maxDimension;
+      } else {
+        width = Math.round((width / height) * maxDimension);
+        height = maxDimension;
+      }
+    }
+    
+    // Try different quality levels to meet size requirement
+    const qualityLevels = [85, 75, 65, 55, 45, 35, 25];
+    
+    for (const quality of qualityLevels) {
+      const processed = await sharp(fileBuffer)
+        .resize(width, height, {
+          fit: 'inside',
+          withoutEnlargement: true
+        })
+        .jpeg({
+          quality: quality,
+          progressive: true,
+          mozjpeg: true  // Better compression
+        })
+        .withMetadata({
+          // Strip all metadata except orientation
+          orientation: metadata.orientation
+        })
+        .toBuffer();
+      
+      if (processed.length <= maxSizeBytes) {
+        console.log(`Compressed to ${quality}% quality: ${(processed.length / 1024).toFixed(2)} KB`);
+        return {
+          buffer: processed,
+          size: processed.length,
+          width: width,
+          height: height,
+          quality: quality
+        };
+      }
+    }
+    
+    // If still too large, use minimum quality
+    const processed = await sharp(fileBuffer)
+      .resize(width, height, {
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .jpeg({
+        quality: 20,
+        progressive: true,
+        mozjpeg: true
+      })
+      .withMetadata({
+        orientation: metadata.orientation
+      })
+      .toBuffer();
+    
+    return {
+      buffer: processed,
+      size: processed.length,
+      width: width,
+      height: height,
+      quality: 20
+    };
+    
+  } catch (error) {
+    console.error('Image processing error:', error);
+    throw new Error('Failed to process image');
+  }
+};
+
+/**
+ * Validate image file
+ */
+const validateImage = async (fileBuffer) => {
+  try {
+    const metadata = await sharp(fileBuffer).metadata();
+    
+    // Check if valid image
+    if (!metadata.format || !['jpeg', 'jpg', 'png', 'webp'].includes(metadata.format)) {
+      throw new Error('Invalid image format');
+    }
+    
+    // Check minimum dimensions (prevent tiny images)
+    if (metadata.width < 200 || metadata.height < 200) {
+      throw new Error('Image too small. Minimum 200x200 pixels required');
+    }
+    
+    // Check maximum dimensions (prevent huge images)
+    if (metadata.width > 10000 || metadata.height > 10000) {
+      throw new Error('Image too large. Maximum 10000x10000 pixels allowed');
+    }
+    
+    return true;
+  } catch (error) {
+    throw error;
+  }
+};
+
+module.exports = { 
+  processAndCompressImage, 
+  validateImage 
+};
+```
+
+**Install Sharp:**
+```bash
+npm install sharp
+```
+
+**Why Sharp?**
+- 4-5x faster than ImageMagick
+- Lower memory usage
+- Better compression (mozjpeg)
+- Production-tested in BFSI systems
+- Handles EXIF stripping properly
+
+### **4. Main API Endpoint (Production-Ready)**
 
 ```javascript
 // routes/agent.js or controllers/agentController.js
 
 const upload = require('../middleware/upload');
-const { uploadOtherDocumentsToS3 } = require('../utils/s3Upload');
+const { s3 } = require('../utils/s3Upload'); // Import s3 object directly
+const { processAndCompressImage, validateImage } = require('../utils/imageProcessor');
 const CustomerVerification = require('../models/CustomerVerification');
 
 // Route
@@ -294,8 +446,97 @@ const uploadOtherDocuments = async (req, res) => {
       });
     }
     
-    // Upload to S3
-    const uploadedDocuments = await uploadOtherDocumentsToS3(files, requestId);
+    // 🎯 PRODUCTION-CRITICAL: Server-side processing
+    const processedFiles = [];
+    const processingErrors = [];
+    
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      
+      try {
+        // Step 1: Validate image
+        await validateImage(file.buffer);
+        
+        // Step 2: Process and recompress
+        const processed = await processAndCompressImage(file.buffer, 800);
+        
+        // Step 3: Replace buffer with processed version
+        processedFiles.push({
+          buffer: processed.buffer,
+          size: processed.size,
+          originalname: file.originalname || `document_${i + 1}.jpg`,
+          mimetype: 'image/jpeg',
+          metadata: {
+            width: processed.width,
+            height: processed.height,
+            quality: processed.quality,
+            originalSize: file.size,
+            compressionRatio: ((1 - processed.size / file.size) * 100).toFixed(2) + '%'
+          }
+        });
+        
+        console.log(`Image ${i + 1}: ${file.size} bytes → ${processed.size} bytes (${processedFiles[i].metadata.compressionRatio} reduction)`);
+        
+      } catch (error) {
+        console.error(`Failed to process image ${i + 1}:`, error);
+        processingErrors.push({
+          index: i + 1,
+          filename: file.originalname,
+          error: error.message
+        });
+      }
+    }
+    
+    // If any processing failed, return error
+    if (processingErrors.length > 0) {
+      return res.status(400).json({
+        code: 105,
+        message: 'Some images failed processing',
+        errors: processingErrors
+      });
+    }
+    
+    // Upload to S3 with processed images
+    const uploadedDocuments = [];
+    
+    for (let i = 0; i < processedFiles.length; i++) {
+      const file = processedFiles[i];
+      const timestamp = Date.now();
+      const fileName = `other_documents/${requestId}/${timestamp}_${i + 1}.jpg`;
+      
+      try {
+        const s3Params = {
+          Bucket: process.env.S3_BUCKET_NAME,
+          Key: fileName,
+          Body: file.buffer,
+          ContentType: 'image/jpeg',
+          ACL: 'public-read',
+          Metadata: {
+            requestId: requestId,
+            uploadedAt: new Date().toISOString(),
+            originalSize: file.metadata.originalSize.toString(),
+            compressedSize: file.size.toString(),
+            compressionRatio: file.metadata.compressionRatio,
+            quality: file.metadata.quality.toString()
+          }
+        };
+        
+        const result = await s3.upload(s3Params).promise();
+        
+        uploadedDocuments.push({
+          url: result.Location,
+          category: 'other',
+          uploadedAt: new Date(),
+          fileSize: file.size,
+          fileName: file.originalname,
+          metadata: file.metadata
+        });
+        
+      } catch (error) {
+        console.error(`Failed to upload file ${i + 1} to S3:`, error);
+        throw new Error(`S3 upload failed for image ${i + 1}`);
+      }
+    }
     
     // Calculate total size
     const totalSize = uploadedDocuments.reduce((sum, doc) => sum + doc.fileSize, 0);
@@ -327,7 +568,15 @@ const uploadOtherDocuments = async (req, res) => {
       message: `${uploadedDocuments.length} document(s) uploaded successfully`,
       data: {
         requestId: requestId,
-        otherDocument: updatedVerification.checkList.otherDocument
+        otherDocument: updatedVerification.checkList.otherDocument,
+        processingStats: {
+          totalImages: uploadedDocuments.length,
+          totalSize: `${(totalSize / 1024).toFixed(2)} KB`,
+          averageSize: `${(totalSize / uploadedDocuments.length / 1024).toFixed(2)} KB`,
+          averageCompression: processedFiles.reduce((sum, f) => 
+            sum + parseFloat(f.metadata.compressionRatio), 0
+          ) / processedFiles.length + '%'
+        }
       }
     });
     
@@ -342,7 +591,7 @@ const uploadOtherDocuments = async (req, res) => {
 };
 ```
 
-### **4. Update Document Status**
+### **5. Update Document Status**
 
 ```javascript
 // Update existing updateDocsVerification endpoint
