@@ -1,4 +1,4 @@
-# inveye - Project Architecture
+# InvEye - Project Architecture
 
 ## Project Overview
 **inveye - Real-time Analytics Dashboard**  
