@@ -1,4 +1,4 @@
-# InvEye - Project Architecture
+# Roboi - Project Architecture
 
 ## Project Overview
 **inveye - Real-time Analytics Dashboard**  
