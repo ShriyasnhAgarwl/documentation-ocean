@@ -1,4 +1,4 @@
-# InvEye - Project Architecture
+# inveye - Project Architecture
 
 ## Project Overview
 **inveye - Real-time Analytics Dashboard**  
@@ -156,18 +156,18 @@ inveye-web/
 │   │   │       ├── VehicleReports/
 │   │   │       ├── ReportDownload/
 │   │   │       └── index.js
-│   │   ├── common/              # Common components
-│   │   │   ├── DataTable/
-│   │   │   ├── SearchBar/
-│   │   │   ├── FilterPanel/
-│   │   │   ├── DateRangePicker/
-│   │   │   ├── ExportButton/
-│   │   │   ├── Pagination/
-│   │   │   └── index.js
-│   │   └── providers/           # Context providers
-│   │       ├── ThemeProvider.js
-│   │       ├── AuthProvider.js
-│   │       └── QueryProvider.js
+│   │   └── common/              # Common components
+│   │       ├── DataTable/
+│   │       ├── SearchBar/
+│   │       ├── FilterPanel/
+│   │       ├── DateRangePicker/
+│   │       ├── ExportButton/
+│   │       ├── Pagination/
+│   │       └── index.js
+│   ├── providers/               # Context providers (app-level)
+│   │   ├── ThemeProvider.js
+│   │   ├── AuthProvider.js
+│   │   └── QueryProvider.js
 │   ├── lib/                     # Library configurations
 │   │   ├── axios.js             # Axios instance
 │   │   ├── echarts.js           # ECharts configuration
@@ -222,6 +222,8 @@ inveye-web/
 │       ├── analytics.js
 │       ├── vehicle.js
 │       └── index.js
+├── src/
+│   └── middleware.js            # Next.js middleware (auth, redirects)
 ├── .env.local                   # Environment variables
 ├── .env.example                 # Example environment variables
 ├── .eslintrc.json              # ESLint configuration
