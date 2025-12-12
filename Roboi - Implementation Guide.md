@@ -1,4 +1,4 @@
-# InvEye - Implementation Guide
+# Roboi - Implementation Guide
 
 ## Overview
 This guide provides step-by-step instructions for implementing the Nayara Admin dashboard following the established architecture.
